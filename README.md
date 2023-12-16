@@ -1,7 +1,7 @@
 # Guide
-This is a guide how to make JTAG debugging of ESP-32 using OpenOCD via RaspberryPI for Visual Studio Code working.
+This is a guide how to make JTAG debugging of ESP-32 using OpenOCD via RaspberryPI for Visual Studio Code.
 
-I had an unused RPi laying around and I wanted to use it for realtime debugging of ESP-32, because I was tired of debugging using just Serial.print.
+I had an unused RPi laying around and I wanted to use it for realtime debugging of ESP-32, because I was tired of debugging using just with Serial.print.
 
 # Overview
 We'll be using OpenOCD as a gdb server. OpenOCD will communicate with the ESP-32 board using JTAG protocol. VSCode gdb will talk to OpenOCD. Additionally we'll use esptool.py to flash the board. You can OpenOCD for flashing over JTAG, but I found it more difficult to setup.
@@ -208,7 +208,7 @@ void loop() {
 ```
 
 11. Now, under your project, open .vscode directory and you should see launch.json file, open it
-12. Under configurations, add these two:
+12. Under configurations, add these two - don't forget to replace placeholders with your info:
 ```
         {
             "name": "MY-Upload-Debug",
@@ -293,3 +293,82 @@ void loop() {
         },
 ```
 
+Couple of words about this config:
+- these are configurations which you'll use to either upload&debug or just debug ESP-32 in realtime. The only difference between these two is the preLaunchTask, which flashes the firmware onto ESP-32 in case of Upload&Debug.
+- vscode launches esp-32 gdb and then sends few commands to that gdb
+- First command is for gdb to know about the symbols
+- second is to make gdb/openocd aware that there are only 2 HW breakpoints
+  - ESP-32 has only 2 HW breakpoints and around 63 SW breakpoints. I was not able to make the SW breakpoints work, so I needed to disable the FLASH (in openocd command) to force openocd to only use HW breakpoints
+  - First HW breakpoint is always use to break at app_main, which is just before the entry point into your code. For some reason you need this first breakpoint when you run the code and if you don't have it then you can't break in your own code
+- 3rd command tells gdb to connect to gdb server (openocd)
+- 4th reset the ESP-32 and halts it at the start
+- 5th is to flush the register cache in gdb, so that gdb always re-reads the registers
+- 6th is the mentioned pre-entry brackpoint which we need in order for the 2nd breakpoint to work. Once your run the debugging and it breaks in app_main you can actually delete that breakpoint and use 2 HW breakpoints for your own code
+- 7th command starts the execution
+
+13. Next, you need to create file tasks.json in your .vscode directory and put this there:
+```
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "uploadOverRpi",
+            "type": "shell",
+            "command": "powershell",
+            "isShellCommand": true,
+            "showOutput": "always",
+            "args": [
+               "C:\\Users\\<your account>\\Documents\\PlatformIO\\uploadOverRpi.ps1",
+               "-FirmwareFileName ${workspaceFolder}\\.pio\\build\\esp-wrover-kit\\firmware.bin"
+              ]
+        }
+    ]
+}
+```
+
+14. Last in platformio.ini file at your project directory ensure you have this:
+```
+[env:esp-wrover-kit]
+platform = espressif32
+board = esp-wrover-kit
+framework = arduino
+build_type = debug
+```
+
+The 'esp-wrover-kit' can be anything, but you need to make sure that it's the same in your entire setup. It is used in tasks.json, launch.json, platformio.ini.
+
+# Using it
+Once you have everything set up this is how you normally use it:
+1. start up your RPi, power on your ESP-32
+2. ssh to RPi using two sessions
+3. as root, on the first session run `openocd -c 'set ESP_FLASH_SIZE 0' -s /usr/local/share/openocd/scripts -f interface/raspberrypi-native.cfg -f target/esp32.cfg -c "adapter speed 1000"`
+4. start your VScode, write your code
+5. once ready, hit PlatformIO: Build icon at the bottom of VScode (small tick button), this will build the code, create firmware.elf and firmware.bin
+6. On the left side click "Run and Debug" icon.
+7. On top where you have the green Play button click the dropdown and select your configuration, make sure to select the right project if you have multiple projects open. Either select Upload&Debug or just Debug (if you have already latest code uploaded and just want to run it). Then click the green Play button
+
+At this point what should happen is that in the console in VSCode you should see that firmware.bin has been uploaded to RPi and esptool.py flashed the firmware to ESP-32. You should also see some new messages in openocd and eventually VScode bottom bar should turn blue and your code execution should stop just below `externl "C" void app_main()` in main.cpp of esp32 code.
+
+At this moment your ESP-32 hit the first HW breakpoint and is waiting. You can remove this breakpoint, then go to your code, setup your breakpoint and hit F5 to continue the execution. It should then work, including stepping (F10, etc).
+
+8. Now open the second ssh session to RPi and run `sudo screen /dev/ttyS0 115200`. That will give you the serial output of your ESP-32, so you can see Serial.print messages and so on.
+
+Please make sure that when you are uploading the code you close this screen (serial logging), otherwise esptool.py will fail to upload your code to ESP-32, because serial /dev/ttyS0 is used by screen. You can close the screen by hitting ctrl+a, releasing it and then hitting 'k' and confirming it with 'y'.
+
+Important notes:
+- you can only maximum of 2 breakpoints (including the one in app_main(), if you didn't delete it).
+- 'Run to line' internally uses a breakpoint, so you can only use that if you have zero or one breakpoint set.
+- I believe step over (F10) also internally uses a breakpoint, so I think that can be used also only if you have zero or one breakpoint set.
+- any time you get a popup error in VSCode about gdb first step is to restart openocd (ctrl+c and run it again)
+
+
+TODO:
+- console output in VSCode
+- SW breakpoints (+ flash support)
+
+Related and useful links (helped me to learn and write this guide):
+- https://docs.platformio.org/en/stable/tutorials/espressif32/arduino_debugging_unit_testing.html
+- https://github.com/espressif/openocd-esp32/issues/84
+- https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/jtag-debugging/tips-and-quirks.html
+- https://blog.wokwi.com/gdb-debugging-esp32-using-raspberry-pi/
+- https://chiptron.cz/articles.php?article_id=219 (old, outdated but provides good starting point)
